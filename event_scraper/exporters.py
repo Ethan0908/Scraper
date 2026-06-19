@@ -88,7 +88,8 @@ def parse_google_credentials(credentials_json: str | None = None, credentials_b6
         raw = credentials_json.strip()
         if raw.startswith("GOOGLE_CREDENTIALS_JSON="):
             raw = raw.split("=", 1)[1].strip()
-        raw = raw.strip("'\"")
+        if raw.startswith("'") and raw.endswith("'"):
+            raw = raw[1:-1].strip()
         candidates.append(raw)
         if not raw.startswith("{") and '"type"' in raw:
             candidates.append("{" + raw.rstrip(",") + "}")
