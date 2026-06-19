@@ -78,3 +78,65 @@ async def safe_goto(page: Page, url: str, timeout_ms: int = 45_000) -> None:
         await page.wait_for_load_state("networkidle", timeout=10_000)
     except Exception:
         pass
+
+
+async def click_expand_controls(page: Page) -> int:
+    return int(
+        await page.evaluate(
+            """
+            () => {
+              const textPattern = /show more|load more|more events|read more|see more|view more|expand|show all/i;
+              const controls = [...document.querySelectorAll('button,a,[role="button"]')]
+                .filter((el) => textPattern.test(el.innerText || el.textContent || ''))
+                .filter((el) => !el.disabled && el.offsetParent !== null);
+              let clicked = 0;
+              for (const control of controls.slice(0, 5)) {
+                try {
+                  control.click();
+                  clicked += 1;
+                } catch (_) {}
+              }
+              return clicked;
+            }
+            """
+        )
+    )
+
+
+async def scroll_lazy_content(
+    page: Page,
+    max_rounds: int = 18,
+    idle_rounds: int = 4,
+    wait_ms: int = 900,
+) -> None:
+    consecutive_idle_rounds = 0
+    previous_signal = ""
+
+    for _ in range(max_rounds):
+        clicked = await click_expand_controls(page)
+        signal = await page.evaluate(
+            """
+            () => JSON.stringify({
+              height: document.body.scrollHeight,
+              links: document.querySelectorAll('a[href]').length,
+              textLength: (document.body.innerText || '').length,
+              y: Math.round(window.scrollY),
+            })
+            """
+        )
+
+        if signal == previous_signal and clicked == 0:
+            consecutive_idle_rounds += 1
+        else:
+            consecutive_idle_rounds = 0
+        previous_signal = signal
+
+        if consecutive_idle_rounds >= idle_rounds:
+            break
+
+        await page.evaluate("window.scrollBy(0, Math.max(window.innerHeight * 0.85, 700))")
+        await page.wait_for_timeout(wait_ms)
+
+    await click_expand_controls(page)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await page.wait_for_timeout(300)
