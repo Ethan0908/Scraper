@@ -12,7 +12,7 @@ from playwright.async_api import Browser, Page
 
 from event_scraper.cleaning import clean_name, clean_text, extract_email, is_noise_url, normalise_url
 from event_scraper.models import Event, Organizer, ScrapedEvent
-from event_scraper.scrapers.base import BaseScraper, safe_goto
+from event_scraper.scrapers.base import BaseScraper, click_expand_controls, safe_goto, scroll_lazy_content
 
 LOGGER = logging.getLogger(__name__)
 
@@ -101,8 +101,8 @@ class LumaScraper(BaseScraper):
                         )
                         break
 
-                    clicked_more = await self._click_load_more(page)
-                    await page.evaluate("window.scrollBy(0, Math.max(document.body.scrollHeight, 2400))")
+                    clicked_more = await click_expand_controls(page)
+                    await page.evaluate("window.scrollBy(0, Math.max(window.innerHeight * 0.85, 700))")
                     await page.wait_for_timeout(1200 if clicked_more else 900)
             finally:
                 await page.close()
@@ -123,25 +123,16 @@ class LumaScraper(BaseScraper):
             urls.append(href)
         return urls
 
-    async def _click_load_more(self, page: Page) -> bool:
-        return bool(
-            await page.evaluate(
-                """
-                () => {
-                  const matches = [...document.querySelectorAll('button,a')]
-                    .filter((el) => /load more|show more|more events/i.test(el.innerText || el.textContent || ''));
-                  if (!matches.length) return false;
-                  matches[0].click();
-                  return true;
-                }
-                """
-            )
-        )
-
     async def scrape_event(self, browser: Browser, event_url: str) -> ScrapedEvent | None:
         page = await browser.new_page()
         try:
             await safe_goto(page, event_url)
+            await scroll_lazy_content(
+                page,
+                max_rounds=min(max(self.scroll_rounds // 2, 10), 25),
+                idle_rounds=3,
+                wait_ms=900,
+            )
             html = await page.content()
             visible_text = await page.locator("body").inner_text(timeout=5_000)
         finally:
@@ -200,6 +191,7 @@ class LumaScraper(BaseScraper):
         page = await browser.new_page()
         try:
             await safe_goto(page, organizer.profile_url)
+            await scroll_lazy_content(page, max_rounds=12, idle_rounds=3, wait_ms=800)
             html = await page.content()
             text = await page.locator("body").inner_text(timeout=5_000)
         except Exception:
