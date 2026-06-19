@@ -2,6 +2,35 @@ name: Scrape Events
 
 on:
   workflow_dispatch:
+    inputs:
+      target_urls:
+        description: "Comma-separated Luma listing/calendar URLs"
+        required: false
+        default: "https://luma.com/nyc"
+      max_events:
+        description: "Optional event limit after discovery and sharding"
+        required: false
+        default: ""
+      shard_index:
+        description: "Zero-based shard index"
+        required: false
+        default: "0"
+      shard_count:
+        description: "Total number of shards"
+        required: false
+        default: "1"
+      scroll_rounds:
+        description: "Maximum listing-page scroll rounds"
+        required: false
+        default: "40"
+      sheet_write_mode:
+        description: "replace for one full run; append when running separate shards"
+        required: false
+        type: choice
+        options:
+          - replace
+          - append
+        default: replace
   schedule:
     - cron: "0 8 * * *"
 
@@ -31,18 +60,26 @@ jobs:
 
       - name: Run scraper
         env:
-          LUMA_TARGET_URLS: ${{ vars.LUMA_TARGET_URLS || 'https://luma.com/nyc' }}
+          LUMA_TARGET_URLS: ${{ inputs.target_urls || vars.LUMA_TARGET_URLS || 'https://luma.com/nyc' }}
           REQUEST_DELAY_SECONDS: ${{ vars.REQUEST_DELAY_SECONDS || '2.0' }}
-          MAX_EVENTS_PER_SOURCE: ${{ vars.MAX_EVENTS_PER_SOURCE }}
+          MAX_EVENTS_PER_SOURCE: ${{ inputs.max_events || vars.MAX_EVENTS_PER_SOURCE }}
+          SCROLL_ROUNDS: ${{ inputs.scroll_rounds || vars.SCROLL_ROUNDS || '40' }}
+          NO_NEW_URL_ROUNDS: ${{ vars.NO_NEW_URL_ROUNDS || '5' }}
+          SHEET_WRITE_MODE: ${{ inputs.sheet_write_mode || vars.SHEET_WRITE_MODE || 'replace' }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: python main.py --source luma
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+        run: |
+          python main.py \
+            --source luma \
+            --shard-index "${{ inputs.shard_index || '0' }}" \
+            --shard-count "${{ inputs.shard_count || '1' }}"
 
       - name: Upload exports
         uses: actions/upload-artifact@v4
         with:
-          name: event-exports
+          name: event-exports-shard-${{ inputs.shard_index || '0' }}
           path: exports/
           if-no-files-found: warn

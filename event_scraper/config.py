@@ -16,12 +16,16 @@ class Settings:
     luma_target_urls: list[str]
     request_delay_seconds: float
     max_events_per_source: int | None
+    scroll_rounds: int
+    no_new_url_rounds: int
     headless: bool
     export_dir: Path
     supabase_url: str | None
     supabase_service_role_key: str | None
     google_sheet_id: str | None
     google_credentials_json: str | None
+    google_credentials_b64: str | None
+    sheet_write_mode: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -30,10 +34,14 @@ class Settings:
             luma_target_urls=_split_csv(os.getenv("LUMA_TARGET_URLS")) or ["https://luma.com/nyc"],
             request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "2.0")),
             max_events_per_source=int(max_events_raw) if max_events_raw else None,
+            scroll_rounds=int(os.getenv("SCROLL_ROUNDS", "40")),
+            no_new_url_rounds=int(os.getenv("NO_NEW_URL_ROUNDS", "5")),
             headless=os.getenv("HEADLESS", "true").lower() != "false",
             export_dir=Path(os.getenv("EXPORT_DIR", "exports")),
             supabase_url=os.getenv("SUPABASE_URL"),
             supabase_service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
             google_sheet_id=os.getenv("GOOGLE_SHEET_ID"),
             google_credentials_json=os.getenv("GOOGLE_CREDENTIALS_JSON"),
+            google_credentials_b64=os.getenv("GOOGLE_CREDENTIALS_B64"),
+            sheet_write_mode=os.getenv("SHEET_WRITE_MODE", "replace").lower(),
         )

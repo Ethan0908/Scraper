@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
-from playwright.async_api import Browser
+from playwright.async_api import Browser, Page
 
 from event_scraper.cleaning import clean_name, clean_text, extract_email, is_noise_url, normalise_url
 from event_scraper.models import Event, Organizer, ScrapedEvent
-from event_scraper.scrapers.base import BaseScraper, auto_scroll, safe_goto
+from event_scraper.scrapers.base import BaseScraper, click_expand_controls, safe_goto, scroll_lazy_content
+
+LOGGER = logging.getLogger(__name__)
 
 LUMA_HOSTS = {"luma.com", "lu.ma", "www.luma.com", "www.lu.ma"}
 SECTION_ROLES = {
@@ -32,40 +36,103 @@ SKIP_PATH_PREFIXES = (
     "/terms",
     "/privacy",
     "/help",
+    "/settings",
+    "/notifications",
 )
 
 
 class LumaScraper(BaseScraper):
     source_site = "luma"
 
+    def __init__(
+        self,
+        target_urls: Iterable[str],
+        delay_seconds: float = 2.0,
+        max_events: int | None = None,
+        shard_index: int = 0,
+        shard_count: int = 1,
+        scroll_rounds: int = 40,
+        no_new_url_rounds: int = 5,
+    ) -> None:
+        super().__init__(
+            target_urls=target_urls,
+            delay_seconds=delay_seconds,
+            max_events=max_events,
+            shard_index=shard_index,
+            shard_count=shard_count,
+        )
+        self.scroll_rounds = scroll_rounds
+        self.no_new_url_rounds = no_new_url_rounds
+
     async def collect_event_urls(self, browser: Browser) -> list[str]:
         urls: list[str] = []
         seen: set[str] = set()
         for target_url in self.target_urls:
             page = await browser.new_page()
+            target_count_before = len(urls)
             try:
                 await safe_goto(page, target_url)
-                await auto_scroll(page)
-                anchors = await page.eval_on_selector_all(
-                    "a[href]",
-                    "els => els.map(a => ({ href: a.href, text: a.innerText || a.textContent || '' }))",
-                )
+                no_new_rounds = 0
+                for round_index in range(self.scroll_rounds + 1):
+                    new_urls = await self._extract_event_urls_from_page(page, target_url)
+                    added = 0
+                    for href in new_urls:
+                        if href not in seen:
+                            seen.add(href)
+                            urls.append(href)
+                            added += 1
+
+                    if added:
+                        no_new_rounds = 0
+                        LOGGER.info(
+                            "Collected %d new Luma event URLs from %s on scroll round %d",
+                            added,
+                            target_url,
+                            round_index,
+                        )
+                    else:
+                        no_new_rounds += 1
+
+                    if no_new_rounds >= self.no_new_url_rounds:
+                        LOGGER.info(
+                            "Stopping %s after %d rounds with no new URLs",
+                            target_url,
+                            no_new_rounds,
+                        )
+                        break
+
+                    clicked_more = await click_expand_controls(page)
+                    await page.evaluate("window.scrollBy(0, Math.max(window.innerHeight * 0.85, 700))")
+                    await page.wait_for_timeout(1200 if clicked_more else 900)
             finally:
                 await page.close()
 
-            for anchor in anchors:
-                href = normalise_url(anchor.get("href"), target_url)
-                if not href or not self._looks_like_luma_event_url(href):
-                    continue
-                if href not in seen:
-                    seen.add(href)
-                    urls.append(href)
+            LOGGER.info("Collected %d event URLs from target %s", len(urls) - target_count_before, target_url)
+        return urls
+
+    async def _extract_event_urls_from_page(self, page: Page, target_url: str) -> list[str]:
+        anchors = await page.eval_on_selector_all(
+            "a[href]",
+            "els => els.map(a => ({ href: a.href, text: a.innerText || a.textContent || '' }))",
+        )
+        urls: list[str] = []
+        for anchor in anchors:
+            href = normalise_url(anchor.get("href"), target_url)
+            if not href or not self._looks_like_luma_event_url(href, target_url):
+                continue
+            urls.append(href)
         return urls
 
     async def scrape_event(self, browser: Browser, event_url: str) -> ScrapedEvent | None:
         page = await browser.new_page()
         try:
             await safe_goto(page, event_url)
+            await scroll_lazy_content(
+                page,
+                max_rounds=min(max(self.scroll_rounds // 2, 10), 25),
+                idle_rounds=3,
+                wait_ms=900,
+            )
             html = await page.content()
             visible_text = await page.locator("body").inner_text(timeout=5_000)
         finally:
@@ -124,6 +191,7 @@ class LumaScraper(BaseScraper):
         page = await browser.new_page()
         try:
             await safe_goto(page, organizer.profile_url)
+            await scroll_lazy_content(page, max_rounds=12, idle_rounds=3, wait_ms=800)
             html = await page.content()
             text = await page.locator("body").inner_text(timeout=5_000)
         except Exception:
@@ -152,12 +220,14 @@ class LumaScraper(BaseScraper):
                 organizer.external_website_url = organizer.external_website_url or href
         return organizer
 
-    def _looks_like_luma_event_url(self, url: str) -> bool:
+    def _looks_like_luma_event_url(self, url: str, target_url: str | None = None) -> bool:
         parsed = urlparse(url)
         if parsed.netloc not in LUMA_HOSTS:
             return False
         path = parsed.path.rstrip("/")
-        if not path or path in {"/", "/nyc"}:
+        if not path or path == "/":
+            return False
+        if target_url and path == urlparse(target_url).path.rstrip("/"):
             return False
         if any(path.startswith(prefix) for prefix in SKIP_PATH_PREFIXES):
             return False
